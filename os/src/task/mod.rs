@@ -17,10 +17,11 @@ mod task;
 use crate::config::MAX_APP_NUM;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_us;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
-
+pub use crate::syscall::process::TaskInfo;
 pub use context::TaskContext;
 
 /// The task manager, where all the tasks are managed.
@@ -45,6 +46,10 @@ pub struct TaskManagerInner {
     tasks: [TaskControlBlock; MAX_APP_NUM],
     /// id of current `Running` task
     current_task: usize,
+    //存储所有任务的开始时间
+    tasks_time: [usize;MAX_APP_NUM],
+    //二维数组，存储所有任务的系统调用次数
+    tasks_call: [[u32;500];MAX_APP_NUM], 
 }
 
 lazy_static! {
@@ -59,12 +64,17 @@ lazy_static! {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
             task.task_status = TaskStatus::Ready;
         }
+        //初始化任务的系统调用次数和开始时间
+        let call:[[u32;500];MAX_APP_NUM]=[[0;500];MAX_APP_NUM];
+        let time:[usize;MAX_APP_NUM] = [0;MAX_APP_NUM];
         TaskManager {
             num_app,
             inner: unsafe {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    tasks_call:call,
+                    tasks_time:time,
                 })
             },
         }
@@ -81,6 +91,8 @@ impl TaskManager {
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
+        //设置任务0的开始时间
+        inner.tasks_time[0] = get_time_us()/1000;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
@@ -125,6 +137,11 @@ impl TaskManager {
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
+            //如果切换任务的时候发现这个任务的开始时间没有设置，那么就进行设置，如此一来就能掌握到所有任务的开始时间。任务0的在初始化的函数中已经设置了
+            if inner.tasks_time[next] == 0 {
+                inner.tasks_time[next] = get_time_us()/1000;
+            }
+
             drop(inner);
             // before this, we should drop local variables that must be dropped manually
             unsafe {
@@ -134,6 +151,25 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    //用于改变任务信息的函数（主要是为了修改调用次数服务）故而需要sys_call的id
+    fn change_info(&self,sys_call_id:usize){
+        let mut inner = self.inner.exclusive_access();
+        let current  = inner.current_task;
+        inner.tasks_call[current][sys_call_id] += 1;
+    }
+
+    //返回当前任务的taskinfo
+    fn get_info(&self) -> TaskInfo{
+        let inner = self.inner.exclusive_access();
+        let current  = inner.current_task;
+        let task_info = TaskInfo{
+            syscall_times:inner.tasks_call[current],
+            status:TaskStatus::Running,
+            time:(get_time_us()/1000 - inner.tasks_time[current]),
+        };
+        return task_info;
     }
 }
 
@@ -168,4 +204,10 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// 新增函数接口，用于调整当前的tasksInfo
+pub fn change_info(sys_call_id:usize) -> TaskInfo{
+    TASK_MANAGER.change_info(sys_call_id);
+    return TASK_MANAGER.get_info();
 }
