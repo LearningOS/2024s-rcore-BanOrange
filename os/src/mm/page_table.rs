@@ -4,17 +4,27 @@ use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPag
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
+pub use crate::syscall::process::TimeVal;
+use crate::syscall::process::TaskInfo;
 
 bitflags! {
     /// page table entry flags
     pub struct PTEFlags: u8 {
+        ///
         const V = 1 << 0;
+        ///
         const R = 1 << 1;
+        ///
         const W = 1 << 2;
+        ///
         const X = 1 << 3;
+        ///
         const U = 1 << 4;
+        ///
         const G = 1 << 5;
+        ///
         const A = 1 << 6;
+        ///
         const D = 1 << 7;
     }
 }
@@ -127,7 +137,7 @@ impl PageTable {
     }
     /// set the map between virtual page number and physical page number
     #[allow(unused)]
-    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags){
         let pte = self.find_pte_create(vpn).unwrap();
         assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
@@ -142,6 +152,22 @@ impl PageTable {
     /// get the page table entry from the virtual page number
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.find_pte(vpn).map(|pte| *pte)
+    }
+
+
+    ///返回是否是一个有效的vpn
+    pub fn find_vpn_vaild(&self,vpn:VirtPageNum) -> Option<usize>{
+        let pte = self.find_pte(vpn);
+        match pte {
+            None => return None,
+            Some(_) => {
+                if pte.unwrap().is_valid() {
+                    return Some(1);
+                }else{
+                    return None;
+                }
+            }
+        }
     }
     /// get the token from the page table
     pub fn token(&self) -> usize {
@@ -170,4 +196,27 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         start = end_va.into();
     }
     v
+}
+
+///这个函数尝试从物理页帧当中读到想要的Timeval，即直接访问到应用程序经过虚拟内存映射的物理地址
+pub fn get_timeval(token:usize,ptr:*mut TimeVal) -> &'static mut TimeVal{
+    let page_table = PageTable::from_token(token);
+    let start = ptr as usize;
+
+    let start_va = VirtAddr::from(start);
+    let vpn = start_va.floor();
+    let ppn = page_table.translate(vpn).unwrap().ppn();
+    ppn.get_mut_offset(start_va.page_offset())
+}
+
+///这个函数会从传过来的用户态token得到想要的TaskInfo变量
+pub fn get_taskinfo_from_app(token:usize,ptr:*mut TaskInfo) -> &'static mut TaskInfo{
+    let page_table = PageTable::from_token(token);
+    let start = ptr as usize;
+
+    let start_va = VirtAddr::from(start);
+    let vpn = start_va.floor();
+    let ppn = page_table.translate(vpn).unwrap().ppn();
+    ppn.get_mut_offset(start_va.page_offset())
+
 }

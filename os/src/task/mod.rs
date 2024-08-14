@@ -21,6 +21,9 @@ use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
+use crate::syscall::process::TaskInfo;
+use crate::timer::get_time_us;
+use alloc::vec;
 
 pub use context::TaskContext;
 
@@ -46,6 +49,10 @@ struct TaskManagerInner {
     tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
     current_task: usize,
+    //存储所有任务的开始时间
+    tasks_time: Vec<usize>,
+    //二维数组，存储所有任务的系统调用次数
+    tasks_call: Vec<[u32;500]>, 
 }
 
 lazy_static! {
@@ -58,12 +65,24 @@ lazy_static! {
         for i in 0..num_app {
             tasks.push(TaskControlBlock::new(get_app_data(i), i));
         }
+        //初始化任务的系统调用次数和开始时间
+        let mut time:Vec<usize> = vec![];
+        let mut call:Vec<[u32;500]> = vec![];
+        let mut count = 0;
+        while count < num_app{
+            time.push(0 as usize);
+            let a:[u32;500] = [0;500];
+            call.push(a);
+            count += 1;
+        }
         TaskManager {
             num_app,
             inner: unsafe {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    tasks_call:call,
+                    tasks_time:time,
                 })
             },
         }
@@ -80,6 +99,8 @@ impl TaskManager {
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
+        //设置任务0的开始时间
+        inner.tasks_time[0] = get_time_us()/1000;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
@@ -143,6 +164,10 @@ impl TaskManager {
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
+            //如果切换任务的时候发现这个任务的开始时间没有设置，那么就进行设置，如此一来就能掌握到所有任务的开始时间。任务0的在初始化的函数中已经设置了
+            if inner.tasks_time[next] == 0 {
+                inner.tasks_time[next] = get_time_us()/1000;
+            }
             drop(inner);
             // before this, we should drop local variables that must be dropped manually
             unsafe {
@@ -152,6 +177,39 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    //用于改变任务信息的函数（主要是为了修改调用次数服务）故而需要sys_call的id
+    fn change_info(&self,sys_call_id:usize){
+        let mut inner = self.inner.exclusive_access();
+        let current  = inner.current_task;
+        inner.tasks_call[current][sys_call_id] += 1;
+    }
+
+    //返回当前任务的taskinfo
+    fn get_info(&self) -> TaskInfo{
+        let inner = self.inner.exclusive_access();
+        let current  = inner.current_task;
+        let task_info = TaskInfo{
+            syscall_times:inner.tasks_call[current],
+            status:TaskStatus::Running,
+            time:(get_time_us()/1000 - inner.tasks_time[current]),
+        };
+        return task_info;
+    }
+
+    fn set_current_ms_mmap(&self,_start:usize,_len:usize,_port:usize) -> isize{
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let i = inner.tasks[current].memory_set.insert_mmap_area(_start,_len,_port);
+        return i;
+    }
+
+    fn del_current_ms_mmap(&self,_start:usize,_len:usize) -> isize{
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let i = inner.tasks[current].memory_set.del_mmap(_start,_len);
+        return i;
     }
 }
 
@@ -201,4 +259,20 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// 新增函数接口，用于调整当前的tasksInfo
+pub fn change_info(sys_call_id:usize) -> TaskInfo{
+    TASK_MANAGER.change_info(sys_call_id);
+    return TASK_MANAGER.get_info();
+}
+
+///得到当前任务的内存块并且映射到虚拟地址
+pub fn set_current_ms_mmap(_start:usize,_len:usize,_port:usize) -> isize{
+    TASK_MANAGER.set_current_ms_mmap(_start,_len,_port)
+}
+
+///删除掉当前任务中虚拟内存地址对应物理内存(取消映射)
+pub fn del_current_ms_mmap(_start:usize,_len:usize) -> isize{
+    TASK_MANAGER.del_current_ms_mmap(_start,_len)
 }
