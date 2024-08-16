@@ -60,6 +60,21 @@ impl MemorySet {
             None,
         );
     }
+
+    /// 插入一个mmap类型的逻辑段
+    pub fn insert_mmap_area(
+        &mut self,
+        _start: usize,
+        _len: usize,
+        _port: usize,
+    )->isize{
+       let i = self.push_mapp(
+            MapArea::new_mmap(_start,_len,_port),
+            None,
+        );
+        return i;
+    }
+
     /// remove a area
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtPageNum) {
         if let Some((idx, area)) = self
@@ -82,6 +97,32 @@ impl MemorySet {
         }
         self.areas.push(map_area);
     }
+
+    /// 加入一个mmap逻辑段进入set
+    fn push_mapp(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> isize{
+        let i = map_area.map_mmap(&mut self.page_table);
+        if i == -1 {
+            return -1;
+        }
+        if let Some(data) = data {
+            map_area.copy_data(&mut self.page_table, data);
+        }
+        self.areas.push(map_area);
+        0
+    }
+
+        /// 删除一个对应的虚拟内存映射
+        pub fn del_mmap(&mut self,_start:usize,_len:usize) -> isize{
+            let mut res_1:isize=-1;
+            for i in 0..self.areas.len(){
+                let res = self.areas[i].unmap_mmap(_start,_len,&mut self.page_table);
+                if res == 0 {
+                    res_1 = 0;
+                }
+            }
+            res_1
+        }
+        
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
         self.page_table.map(
@@ -253,6 +294,14 @@ impl MemorySet {
         }
         memory_set
     }
+
+    pub fn from_new()->Self{
+        let mut memory_set = Self::new_bare();
+        // map trampoline
+        memory_set.map_trampoline();
+        // 不需要复制地址空间，只需要留好跳板页即可
+        memory_set
+    }
     /// Change page table by writing satp CSR Register.
     pub fn activate(&self) {
         let satp = self.page_table.token();
@@ -325,6 +374,26 @@ impl MapArea {
             map_perm,
         }
     }
+
+    /// 新建一个页对齐的逻辑段  
+    pub fn new_maparea_mmap(
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        map_type: MapType,
+        map_perm: MapPermission,
+    ) -> Self {
+        let start_vpn: VirtPageNum = start_va.floor();
+        let end_vpn: VirtPageNum = end_va.floor();
+        // println!("the start{:?}",start_vpn);
+        // println!("the end{:?}",end_vpn);
+        Self {
+            vpn_range: VPNRange::new(start_vpn, end_vpn),
+            data_frames: BTreeMap::new(),
+            map_type,
+            map_perm,
+        }
+    }
+
     pub fn from_another(another: &Self) -> Self {
         Self {
             vpn_range: VPNRange::new(another.vpn_range.get_start(), another.vpn_range.get_end()),
@@ -348,6 +417,33 @@ impl MapArea {
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
         page_table.map(vpn, ppn, pte_flags);
     }
+
+    pub fn map_one_mmap(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> isize {
+        let ppn: PhysPageNum;
+        let result = page_table.find_vpn_vaild(vpn);
+        match result {
+            None => (),
+            //寻找到了该页表项
+            Some(_) => {
+                println!("there is a same vpn{:?}",vpn);
+                return -1;
+            },
+        }
+        match self.map_type {
+            MapType::Identical => {
+                ppn = PhysPageNum(vpn.0);
+            }
+            MapType::Framed => {
+                let frame = frame_alloc().unwrap();
+                ppn = frame.ppn;
+                self.data_frames.insert(vpn, frame);
+            }
+        }
+        let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
+        page_table.map(vpn, ppn, pte_flags);
+        return 0;
+    }
+
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         if self.map_type == MapType::Framed {
             self.data_frames.remove(&vpn);
@@ -359,11 +455,56 @@ impl MapArea {
             self.map_one(page_table, vpn);
         }
     }
+
+      /// 映射
+      pub fn map_mmap(&mut self, page_table: &mut PageTable) -> isize{
+        let mut start_vpn = self.vpn_range.get_start();
+        let end_vpn = self.vpn_range.get_end(); 
+        while start_vpn <= end_vpn {
+        //    println!("the vpn in the loop:{:?}",start_vpn);
+           let i =  self.map_one_mmap(page_table, start_vpn);
+           if i == -1 {
+            return -1;
+           }
+           start_vpn.step();
+        }
+        0
+    }
+
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.unmap_one(page_table, vpn);
         }
     }
+
+    ///解映射一个mmap区域
+    pub fn unmap_mmap(&mut self,_start:usize,_len:usize,page_table:&mut PageTable) -> isize{
+        let start_va = VirtAddr::from(_start);
+        let end_va = VirtAddr::from(_start+_len-1);
+        let mut start_vpn: VirtPageNum = start_va.floor();
+        let end_vpn: VirtPageNum = end_va.floor();
+        while start_vpn <= end_vpn {
+            if self.contain_vpn(start_vpn)==1{
+                // println!("unmap vpn:{:?}",start_vpn);
+                self.unmap_one(page_table,start_vpn);
+            }else{
+                return -1;
+            }
+            start_vpn.step();
+        }
+        return 0;
+    }
+
+    /// 查询是否包含该虚拟页表
+    pub fn contain_vpn(&mut self,vpn:VirtPageNum) -> isize{
+        let v1 = self.vpn_range.get_start();
+        let v2 = self.vpn_range.get_end();
+        if (vpn <= v2) && (vpn >= v1){
+            return 1;
+        }
+        return 0;
+    }
+
     #[allow(unused)]
     pub fn shrink_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(new_end, self.vpn_range.get_end()) {
@@ -399,6 +540,34 @@ impl MapArea {
             }
             current_vpn.step();
         }
+    }
+
+    ///用于新建一个mmap的逻辑段
+    pub fn new_mmap(_start:usize,_len:usize,_port:usize) -> Self{
+        let start_va = VirtAddr::from(_start);
+        let end_va = VirtAddr::from(_start+_len-1);
+        let map_type = MapType::Framed;
+        let mut map_perm:MapPermission = MapPermission::U;
+        let bit0 = (_port >> 0) & 1;
+        let bit1 = (_port >> 1) & 1;
+        let bit2 = (_port >> 2) & 1;
+        if bit0==1 {
+            map_perm = map_perm | MapPermission::R;
+        }
+        if bit1==1 {
+            map_perm = map_perm | MapPermission::W;
+        }
+        if bit2==1 {
+            map_perm = map_perm | MapPermission::X;
+        }
+
+        let ma:MapArea = MapArea::new_maparea_mmap(
+            start_va,
+            end_va,
+            map_type,
+            map_perm,
+        );
+        return ma;
     }
 }
 

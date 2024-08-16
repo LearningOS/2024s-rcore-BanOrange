@@ -8,6 +8,8 @@ use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
+use crate::timer::get_time_us;
+use crate::syscall::process::TaskInfo;
 
 /// Task control block structure
 ///
@@ -19,7 +21,6 @@ pub struct TaskControlBlock {
 
     /// Kernel stack corresponding to PID
     pub kernel_stack: KernelStack,
-
     /// Mutable
     inner: UPSafeCell<TaskControlBlockInner>,
 }
@@ -33,6 +34,45 @@ impl TaskControlBlock {
     pub fn get_user_token(&self) -> usize {
         let inner = self.inner_exclusive_access();
         inner.memory_set.token()
+    }
+    ///根據優先級得到對應的pass值並相加
+    pub fn change_stride(&self){
+        let big_pass:usize = 1048576; //1MB
+        let mut inner = self.inner_exclusive_access();
+        let pass:usize = big_pass/inner.priority;
+        
+        inner.stride += pass;
+    }
+
+    //设置优先级
+    pub fn set_priority(&self,prio:usize){
+        let mut inner = self.inner_exclusive_access();
+        inner.priority = prio;
+    }
+
+    ///修改系统调用次数 
+    pub fn change_info(&self,sys_id:usize) ->TaskInfo{
+        let mut inner = self.inner_exclusive_access();
+        inner.tasks_call[sys_id] += 1;
+        let task_info = TaskInfo{
+            status:TaskStatus::Running,
+            syscall_times:inner.tasks_call,
+            time:(get_time_us()/1000 - inner.tasks_time),
+        };
+        return task_info;
+    }
+
+    /// 在当前任务中增加mmap映射
+    pub fn set_current_ms_mmap(&self,_start:usize,_len:usize,_port:usize) -> isize{
+        let mut inner = self.inner.exclusive_access();
+        let i = inner.memory_set.insert_mmap_area(_start,_len,_port);
+        return i;
+    }
+
+    pub fn del_current_ms_mmap(&self,_start:usize,_len:usize) -> isize{
+        let mut inner = self.inner.exclusive_access();
+        let i = inner.memory_set.del_mmap(_start,_len);
+        return i;
     }
 }
 
@@ -68,6 +108,16 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    //用於表示當前長度的字段，越小意味著越容易被選中去執行
+    pub stride:usize,
+    // 表示任務優先級，與pass的計算直接相關
+    pub priority:usize,
+
+    //存储该任务的开始时间
+    tasks_time: usize,
+    //二维数组，存储该任务的系统调用次数
+    tasks_call: [u32;500], 
 }
 
 impl TaskControlBlockInner {
@@ -102,6 +152,10 @@ impl TaskControlBlock {
         let pid_handle = pid_alloc();
         let kernel_stack = kstack_alloc();
         let kernel_stack_top = kernel_stack.get_top();
+        let stride = 0;
+        let priority = 16;
+        let time:usize = get_time_us()/1000;
+        let call:[u32;500] = [0;500];
         // push a task context which goes to trap_return to the top of kernel stack
         let task_control_block = Self {
             pid: pid_handle,
@@ -118,6 +172,10 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride,
+                    priority,
+                    tasks_call:call,
+                    tasks_time:time,
                 })
             },
         };
@@ -176,6 +234,10 @@ impl TaskControlBlock {
         let pid_handle = pid_alloc();
         let kernel_stack = kstack_alloc();
         let kernel_stack_top = kernel_stack.get_top();
+        let stride = 0;
+        let priority = 16;
+        let time:usize = get_time_us()/1000;
+        let call:[u32;500] = [0;500];
         let task_control_block = Arc::new(TaskControlBlock {
             pid: pid_handle,
             kernel_stack,
@@ -191,6 +253,11 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    stride,
+                    priority,
+                    tasks_time:time,
+                    tasks_call:call,
+                    
                 })
             },
         });
@@ -204,6 +271,55 @@ impl TaskControlBlock {
         task_control_block
         // **** release child PCB
         // ---- release parent PCB
+    }
+
+    pub fn spawn(self: &Arc<Self>) -> Arc<Self>{
+        let mut parent_inner = self.inner_exclusive_access();
+        // copy user space(include trap context)
+        let memory_set = MemorySet::from_new();
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+        // alloc a pid and a kernel stack in kernel space
+        let pid_handle = pid_alloc();
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        let stride = 0;
+        let priority = 16;
+        let time:usize = get_time_us()/1000;
+        let call:[u32;500] = [0;500];
+        //這其中的trap_cx_ppn base_size memory_status task_cx會被exec重新寫入，所以此處只要不報錯即可
+        //重要的是把父子關係寫出來
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: parent_inner.base_size,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: parent_inner.heap_bottom,
+                    program_brk: parent_inner.program_brk,
+                    stride,
+                    priority,
+                    tasks_time:time,
+                    tasks_call:call,
+                })
+            },
+        });
+        // add child
+        parent_inner.children.push(task_control_block.clone());
+        // return
+        task_control_block
+        // **** release child PCB
+        // ---- release parent PCB
+
     }
 
     /// get pid of process

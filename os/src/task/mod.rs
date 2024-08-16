@@ -19,7 +19,7 @@ mod manager;
 mod processor;
 mod switch;
 #[allow(clippy::module_inception)]
-mod task;
+pub mod task;
 
 use crate::loader::get_app_data_by_name;
 use alloc::sync::Arc;
@@ -40,6 +40,8 @@ pub fn suspend_current_and_run_next() {
     // There must be an application running.
     let task = take_current_task().unwrap();
 
+    //由於我們是要換任務，所以該任務的stride會增加
+    task.change_stride();
     // ---- access current TCB exclusively
     let mut task_inner = task.inner_exclusive_access();
     let task_cx_ptr = &mut task_inner.task_cx as *mut TaskContext;
@@ -47,7 +49,7 @@ pub fn suspend_current_and_run_next() {
     task_inner.task_status = TaskStatus::Ready;
     drop(task_inner);
     // ---- release current PCB
-
+    
     // push back to ready queue.
     add_task(task);
     // jump to scheduling cycle
@@ -58,6 +60,7 @@ pub fn suspend_current_and_run_next() {
 pub const IDLE_PID: usize = 0;
 
 /// Exit the current 'Running' task and run the next task in task list.
+/// 退出任務之後，該任務不會再次執行，所以不需要再改變stride字段了
 pub fn exit_current_and_run_next(exit_code: i32) {
     // take from Processor
     let task = take_current_task().unwrap();
@@ -115,3 +118,4 @@ lazy_static! {
 pub fn add_initproc() {
     add_task(INITPROC.clone());
 }
+

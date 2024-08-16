@@ -4,6 +4,8 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
+pub use crate::syscall::process::TimeVal;
+use crate::syscall::process::TaskInfo;
 
 bitflags! {
     /// page table entry flags
@@ -154,6 +156,22 @@ impl PageTable {
             (aligned_pa_usize + offset).into()
         })
     }
+
+        ///返回是否是一个有效的vpn
+        pub fn find_vpn_vaild(&self,vpn:VirtPageNum) -> Option<usize>{
+            let pte = self.find_pte(vpn);
+            match pte {
+                None => return None,
+                Some(_) => {
+                    if pte.unwrap().is_valid() {
+                        return Some(1);
+                    }else{
+                        return None;
+                    }
+                }
+            }
+        }
+        
     /// get the token from the page table
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
@@ -212,4 +230,27 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .translate_va(VirtAddr::from(va))
         .unwrap()
         .get_mut()
+}
+
+
+///这个函数尝试从物理页帧当中读到想要的Timeval，即直接访问到应用程序经过虚拟内存映射的物理地址
+pub fn get_timeval(token:usize,ptr:*mut TimeVal) -> &'static mut TimeVal{
+    let page_table = PageTable::from_token(token);
+    let start = ptr as usize;
+
+    let start_va = VirtAddr::from(start);
+    let vpn = start_va.floor();
+    let ppn = page_table.translate(vpn).unwrap().ppn();
+    ppn.get_mut_offset(start_va.page_offset())
+}
+
+///这个函数会从传过来的用户态token得到想要的TaskInfo变量
+pub fn get_taskinfo_from_app(token:usize,ptr:*mut TaskInfo) -> &'static mut TaskInfo{
+    let page_table = PageTable::from_token(token);
+    let start = ptr as usize;
+
+    let start_va = VirtAddr::from(start);
+    let vpn = start_va.floor();
+    let ppn = page_table.translate(vpn).unwrap().ppn();
+    ppn.get_mut_offset(start_va.page_offset())
 }
