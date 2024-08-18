@@ -6,6 +6,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::{Mutex, MutexGuard};
+use alloc::vec;
 /// Virtual filesystem layer over easy-fs
 pub struct Inode {
     block_id: usize,
@@ -52,12 +53,59 @@ impl Inode {
                 disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
                 DIRENT_SZ,
             );
-            if dirent.name() == name {
+            //同时也要确保inode_id不是-1，因为-1表示被伪删除了
+            if dirent.name() == name && dirent.inode_id() != u32::MAX {
                 return Some(dirent.inode_id() as u32);
             }
         }
         None
     }
+    /// 返回对应direntry的偏移量即 i值
+    fn find_direntry(&self,name:&str,disk_inode:&DiskInode) -> usize{
+        assert!(disk_inode.is_dir());
+        let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+        let mut dirent = DirEntry::empty();
+        for i in 0..file_count {
+            assert_eq!(
+                disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
+                DIRENT_SZ,
+            );
+            if dirent.name() == name{
+                return i as usize;
+            }
+        }
+        return usize::MAX as usize;
+    } 
+
+    /// 通过inode_id找到所有有关的direntry的偏移量
+    fn find_direntry_by_inode_id(&self,inode_id:u32,disk_inode:&DiskInode) -> Vec<usize>{
+        assert!(disk_inode.is_dir());
+        let mut v:Vec<usize> = vec![];
+        let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+        let mut dirent = DirEntry::empty();
+        for i in 0..file_count {
+            assert_eq!(
+                disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
+                DIRENT_SZ,
+            );
+            if dirent.inode_id() == inode_id {
+                v.push(i as usize);
+            }
+        }
+        return v;
+    }
+    //将对应的位置的dir更新
+    fn update_dir_entry(&self,name:&str,inode_id:u32,index:usize,disk_inode:&mut DiskInode){
+        assert!(disk_inode.is_dir());
+        let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+        assert!(index<file_count);
+        let mut dirent = DirEntry::new(name,inode_id);
+        assert_eq!(
+            disk_inode.write_at(DIRENT_SZ * index, dirent.as_bytes_mut(), &self.block_device,),
+            DIRENT_SZ,
+        );
+    }
+
     /// Find inode under current inode by name
     pub fn find(&self, name: &str) -> Option<Arc<Inode>> {
         let fs = self.fs.lock();
@@ -113,18 +161,25 @@ impl Inode {
                 new_inode.initialize(DiskInodeType::File);
             });
         self.modify_disk_inode(|root_inode| {
-            // append file in the dirent
-            let file_count = (root_inode.size as usize) / DIRENT_SZ;
-            let new_size = (file_count + 1) * DIRENT_SZ;
-            // increase size
-            self.increase_size(new_size as u32, root_inode, &mut fs);
-            // write dirent
-            let dirent = DirEntry::new(name, new_inode_id);
-            root_inode.write_at(
-                file_count * DIRENT_SZ,
-                dirent.as_bytes(),
-                &self.block_device,
-            );
+            //这里的逻辑需要变动，首先确定一下是否有被伪删除的节点
+            //如果存在，则将对应内容写到伪删除的节点上
+            let vec_dir = self.find_direntry_by_inode_id(u32::MAX,root_inode);
+            if vec_dir.len() != 0 {
+                self.update_dir_entry(name,new_inode_id,vec_dir[0],root_inode);
+            }else{
+                // append file in the dirent
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                let new_size = (file_count + 1) * DIRENT_SZ;
+                // increase size
+                self.increase_size(new_size as u32, root_inode, &mut fs);
+                // write dirent
+                let dirent = DirEntry::new(name, new_inode_id);
+                root_inode.write_at(
+                    file_count * DIRENT_SZ,
+                    dirent.as_bytes(),
+                    &self.block_device,
+                );
+            }
         });
 
         let (block_id, block_offset) = fs.get_disk_inode_pos(new_inode_id);
@@ -138,6 +193,132 @@ impl Inode {
         )))
         // release efs lock automatically by compiler
     }
+    ///获得对应的block_id
+    pub fn get_block_id(&self)->usize{
+        return self.block_id;
+    }
+    /// 实现文件的硬连接,node_before是需要连接的文件，newpath则是需要连接到的路径
+    pub fn linkat(&self,old_path:&str,new_path:&str) -> isize{
+        let mut _fs =self.fs.lock();
+        let mut old_inode_id:u32= u32::MAX;
+        
+        //先找到oldpath对应的inode_id
+        if let Some(inode_id) = self.read_disk_inode(|disk_inode| {
+            assert!(disk_inode.is_dir());
+            self.find_inode_id(old_path, disk_inode)
+        }){
+            old_inode_id = inode_id;
+        }else{
+            return -1;
+        }
+        
+        //检查是否合法,是否返回了一个正常的数字
+        if old_inode_id == u32::MAX {
+            return -1;
+        }
+
+        //去寻找一下是否存在newpath对应的文件，不存在则开始进行创建，如果存在的话则返回-1
+        let op = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_inode_id(new_path, root_inode)
+        };
+        if self.read_disk_inode(op).is_some() {
+            return -1;
+        }
+
+        //开始将我们newpath连接到对应inode上面去，这样就可以实现硬连接了
+        self.modify_disk_inode(|root_inode| {
+
+            let vec_dir = self.find_direntry_by_inode_id(u32::MAX,root_inode);
+            if vec_dir.len() != 0 {
+                self.update_dir_entry(new_path,old_inode_id,vec_dir[0],root_inode);
+            }else{
+                // append file in the dirent
+                let file_count = (root_inode.size as usize) / DIRENT_SZ;
+                let new_size = (file_count + 1) * DIRENT_SZ;
+                // increase size
+                self.increase_size(new_size as u32, root_inode, &mut _fs);
+                // write dirent
+                let dirent = DirEntry::new(new_path, old_inode_id);
+                root_inode.write_at(
+                    file_count * DIRENT_SZ,
+                    dirent.as_bytes(),
+                    &self.block_device,
+                );
+            }
+        });
+
+        return 0;
+        
+
+    }
+   
+    /// 进行解链接，值得一提的是采用的是伪删除，即目录项不会真的删掉，而是会使其inode_num指向-1，即表示不存在，这样做的好处是不需要动root_node的size，
+    /// 坏处是可能被攻击，但是我们可以通过修改生成的逻辑，使生成文件的时候先寻找有无被伪删除的目录项，将新目录项的内容写到对应的位置即可
+    pub fn unlinkat(&self,name:&str) -> isize{
+        //分两种情况 一种是只剩最后一个目录项了，那么此时就要删除inode并清空文件内容，如果不是最后一个目录项，那么只需要删除该目录项即可
+        //首先得到对应路径下目录项的文件inode_id
+        let mut _fs = self.fs.lock();
+        let mut inode_id_file:u32 = u32::MAX;
+        if let Some(inode_id) = self.read_disk_inode(|disk_inode| {
+            assert!(disk_inode.is_dir());
+            self.find_inode_id(name, disk_inode)
+        }){
+            inode_id_file = inode_id;
+        }else{
+            return -1;
+        }
+
+        let getalldir = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_direntry_by_inode_id(inode_id_file, root_inode)
+        };  
+
+        let getdir = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_direntry(name, root_inode)
+        };
+
+        let index = self.read_disk_inode(getdir);
+
+        let delete = |root_inode: &mut DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.update_dir_entry(name,u32::MAX,index,root_inode)
+        };
+
+        let vec_dir = self.read_disk_inode(getalldir);
+
+        if vec_dir.len()>=2 {
+            self.modify_disk_inode(delete);
+        }else if vec_dir.len() == 1{
+            //此时既要删除目录项，又需要删除文件
+            assert!(inode_id_file != u32::MAX);
+            let (block_id, block_offset) = _fs.get_disk_inode_pos(inode_id_file);
+            let mut inode:Inode = Inode::new(
+                block_id,
+                block_offset,
+                self.fs.clone(),
+                self.block_device.clone(),
+            );
+            //这里不能直接调用，一定要先把锁去掉，切记
+            drop(_fs);
+            inode.clear();
+            self.modify_disk_inode(delete);
+        }
+
+        if vec_dir.len() < 1 {
+            return -1;
+        }
+        0
+    }
     /// List inodes under current inode
     pub fn ls(&self) -> Vec<String> {
         let _fs = self.fs.lock();
@@ -150,7 +331,10 @@ impl Inode {
                     disk_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
                     DIRENT_SZ,
                 );
-                v.push(String::from(dirent.name()));
+                //只列出没有被伪删除的目录项
+                if dirent.inode_id() != u32::MAX {
+                    v.push(String::from(dirent.name()));
+                }
             }
             v
         })

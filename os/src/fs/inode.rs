@@ -28,6 +28,11 @@ pub struct OSInodeInner {
     inode: Arc<Inode>,
 }
 
+impl OSInodeInner{
+    pub fn get_block_id(&self) -> usize{
+        self.inode.get_block_id()
+    }
+}
 impl OSInode {
     /// create a new inode in memory
     pub fn new(readable: bool, writable: bool, inode: Arc<Inode>) -> Self {
@@ -123,6 +128,18 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
         })
     }
 }
+
+pub fn linkat(old_path:&str,new_path:&str) -> isize{
+    ROOT_INODE.linkat(old_path,new_path)
+}
+
+pub fn unlinkat(name:&str) -> isize{
+    ROOT_INODE.unlinkat(name)
+}
+
+// pub fn get_stat(inode:Inode) -> isize{
+//     ROOT_INODE.stat(inode)
+// }
 
 impl File for OSInode {
     fn readable(&self) -> bool {
