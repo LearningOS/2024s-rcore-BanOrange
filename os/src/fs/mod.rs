@@ -15,6 +15,8 @@ pub trait File: Send + Sync {
     fn read(&self, buf: UserBuffer) -> usize;
     /// write to the file from buf, return the number of bytes written
     fn write(&self, buf: UserBuffer) -> usize;
+    /// 得到跟文件相关的信息，而不是文件内部信息，可以根据不同的文件类型灵活变化
+    fn get_info(&self) -> (usize,usize);
 }
 
 /// The stat of a inode
@@ -30,7 +32,7 @@ pub struct Stat {
     /// number of hard links
     pub nlink: u32,
     /// unused pad
-    pad: [u64; 7],
+    pub pad: [u64; 7],
 }
 
 bitflags! {

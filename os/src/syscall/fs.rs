@@ -4,6 +4,9 @@ use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
 use crate::task::{current_task, current_user_token};
 use crate::fs::inode::unlinkat;
 use crate::fs::inode::linkat;
+use crate::fs::inode::fstat;
+use crate::fs::inode::ls;
+use crate::mm::page_table::get_stat_from_app;
 
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     trace!("kernel:pid[{}] sys_write", current_task().unwrap().pid.0);
@@ -83,25 +86,38 @@ pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
         "kernel:pid[{}] sys_fstat in build",
         current_task().unwrap().pid.0
     );
-
-    let token = current_user_token();
     let task = current_task().unwrap();
     let inner = task.inner_exclusive_access();
-    if fd >= inner.fd_table.len() {
+    if _fd >= inner.fd_table.len() {
         return -1;
     }
-    if let Some(file) = &inner.fd_table[fd] {
+    if let Some(file) = &inner.fd_table[_fd] {
         let file = file.clone();
         // release current task TCB manually to avoid multi-borrow
         drop(inner);
         trace!("kernel: sys_fstat .. file.stat");
-        let block_id = file.get_block_id();
-        fstat(block_id);
+        //对于osinode类型get_info得到的是block_id;
+        let (block_id,block_offset) = file.get_info();
+        let stat = get_stat_from_app(current_user_token(),_st);
+        
+        // println!("this is fstat");
+        // ls();
+        match fstat(block_id,block_offset) {
+            Some(stat_disk) => {
+                stat.nlink = stat_disk.nlink;
+                stat.dev = 0;
+                stat.ino = stat_disk.ino;
+                stat.mode = stat_disk.mode;
+                stat.pad = stat_disk.pad;
+                return 0;
+            },
+            None => {
+                return -1;
+            }
+        }
     } else {
-        -1
+        return -1;
     }
-
-    -1
 }
 
 /// YOUR JOB: Implement linkat.
@@ -116,7 +132,11 @@ pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
     if old_path == new_path {
         return -1;
     }
-    linkat(&old_path,&new_path)
+    linkat(&old_path,&new_path);
+    // println!("this is link");
+    // ls();
+    return 0;
+
 }
 
 /// YOUR JOB: Implement unlinkat.
@@ -127,5 +147,8 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
     );
     let token = current_user_token();
     let name = translated_str(token,_name);
-    unlinkat(&name)
+    unlinkat(&name);
+    // println!("this is unlink");
+    // ls();
+    return 0;
 }

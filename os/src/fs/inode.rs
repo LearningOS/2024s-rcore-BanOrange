@@ -13,6 +13,8 @@ use alloc::vec::Vec;
 use bitflags::*;
 use easy_fs::{EasyFileSystem, Inode};
 use lazy_static::*;
+use crate::fs::Stat;
+use crate::fs::StatMode;
 
 /// inode in memory
 /// A wrapper around a filesystem inode
@@ -31,6 +33,9 @@ pub struct OSInodeInner {
 impl OSInodeInner{
     pub fn get_block_id(&self) -> usize{
         self.inode.get_block_id()
+    }
+    pub fn get_block_offset(&self) -> usize{
+        self.inode.get_block_offset()
     }
 }
 impl OSInode {
@@ -137,9 +142,39 @@ pub fn unlinkat(name:&str) -> isize{
     ROOT_INODE.unlinkat(name)
 }
 
-// pub fn get_stat(inode:Inode) -> isize{
-//     ROOT_INODE.stat(inode)
-// }
+pub fn fstat(block_id:usize,block_offset:usize) -> Option<Stat>{
+    let (inode_id,nlink,file_kind) = ROOT_INODE.stat(block_id,block_offset);
+    let mut mode:StatMode = StatMode::NULL;
+    if file_kind == 1{
+        mode = StatMode::DIR;
+    }
+    if file_kind == 2{
+        mode = StatMode::FILE;
+    }
+
+    if inode_id == u32::MAX || file_kind == 0 {
+        return None;
+    }
+    let stat = Stat {
+        dev: 0,
+        // inode number
+        ino: inode_id as u64,
+        // file type and mode
+        mode: mode,
+        // number of hard links
+        nlink: nlink,
+        // unused pad
+        pad: [0; 7],
+    };
+    return Some(stat);
+}
+
+pub fn ls(){
+    let vec_str = ROOT_INODE.ls();
+    for i in 0.. vec_str.len(){
+        println!("the list of root:{}",vec_str[i]);
+    }
+}
 
 impl File for OSInode {
     fn readable(&self) -> bool {
@@ -171,5 +206,11 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    fn get_info(&self)->(usize,usize){
+        let inner = self.inner.exclusive_access();
+        let block_id = inner.get_block_id();
+        let block_offset = inner.get_block_offset();
+        return (block_id,block_offset);
     }
 }

@@ -94,6 +94,26 @@ impl Inode {
         }
         return v;
     }
+
+    fn find_inode_id_by_block(&self,block_id:usize,block_offset:usize,disk_inode:&DiskInode) -> Option<u32>{
+        let fs = self.fs.lock();
+        assert!(disk_inode.is_dir());
+        let file_count = (disk_inode.size as usize) / DIRENT_SZ;
+        let mut dirent = DirEntry::empty();
+        for i in 0..file_count {
+            assert_eq!(
+                disk_inode.read_at(DIRENT_SZ * i, dirent.as_bytes_mut(), &self.block_device,),
+                DIRENT_SZ,
+            );
+            if dirent.inode_id() != u32::MAX {
+                let (block_id_inode, block_offset_inode) = fs.get_disk_inode_pos(dirent.inode_id());
+                if block_id_inode == (block_id as u32) && block_offset_inode == block_offset{
+                    return Some(dirent.inode_id());
+                }
+            }
+        }
+        None
+    }
     //将对应的位置的dir更新
     fn update_dir_entry(&self,name:&str,inode_id:u32,index:usize,disk_inode:&mut DiskInode){
         assert!(disk_inode.is_dir());
@@ -196,6 +216,10 @@ impl Inode {
     ///获得对应的block_id
     pub fn get_block_id(&self)->usize{
         return self.block_id;
+    }
+    ///获取对应的block_offset
+    pub fn get_block_offset(&self)->usize{
+        return self.block_offset;
     }
     /// 实现文件的硬连接,node_before是需要连接的文件，newpath则是需要连接到的路径
     pub fn linkat(&self,old_path:&str,new_path:&str) -> isize{
@@ -302,7 +326,7 @@ impl Inode {
             //此时既要删除目录项，又需要删除文件
             assert!(inode_id_file != u32::MAX);
             let (block_id, block_offset) = _fs.get_disk_inode_pos(inode_id_file);
-            let mut inode:Inode = Inode::new(
+            let inode:Inode = Inode::new(
                 block_id,
                 block_offset,
                 self.fs.clone(),
@@ -318,6 +342,65 @@ impl Inode {
             return -1;
         }
         0
+    }
+    ///三元组分别代表ino，nlink和文件类型，0表示null，1表示目录，2表示文件
+    pub fn stat(&self,block_id:usize,block_offset:usize) -> (u32,u32,u32){
+        
+        //下段代码只用于测试
+        // let find_1 = |root_inode: &DiskInode| {
+        //     // assert it is a directory
+        //     assert!(root_inode.is_dir());
+        //     // has the file been created?
+        //     self.find_inode_id(&"fname2",root_inode)
+        // }; 
+        // let find_2 = |root_inode: &DiskInode| {
+        //     // assert it is a directory
+        //     assert!(root_inode.is_dir());
+        //     // has the file been created?
+        //     self.find_inode_id(&"linkname0",root_inode)
+        // }; 
+
+        // let node1 = self.read_disk_inode(find_1);
+        // let node2 = self.read_disk_inode(find_2);
+        // assert!(node1.unwrap()==node2.unwrap());
+
+        let fs = self.fs.lock();
+        let mut inode_id:u32 = u32::MAX;
+
+        drop(fs);//又是这个抽象问题，一定要记住mutex在不同函数间也必须确保唯一性
+        let find_inode_id = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_inode_id_by_block(block_id,block_offset,root_inode)
+        };
+        //获取到对应的
+        match self.read_disk_inode(find_inode_id){
+            Some(inode_id_disk) => {
+                inode_id = inode_id_disk;
+            },
+            None => {
+                return (u32::MAX,u32::MAX,u32::MAX);
+            }
+        }
+        //必须要找到对应的inode_id，否则就返None，因为没有这样的文件存在
+        if inode_id == u32::MAX {
+            return (u32::MAX,u32::MAX,u32::MAX);
+        }
+
+        let find_nlink = |root_inode: &DiskInode| {
+            // assert it is a directory
+            assert!(root_inode.is_dir());
+            // has the file been created?
+            self.find_direntry_by_inode_id(inode_id,root_inode)
+        };
+    
+        //获取到连接数量
+        let vec_dir: Vec<usize> = self.read_disk_inode(find_nlink);
+        let nlink = vec_dir.len();
+
+        //因为我们只在同一目录下，所以只可能是文件类型不可能是目录
+        return (inode_id,nlink as u32,2);
     }
     /// List inodes under current inode
     pub fn ls(&self) -> Vec<String> {

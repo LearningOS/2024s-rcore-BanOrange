@@ -10,6 +10,7 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
+// use crate::fs::OSInode;
 
 /// Task control block structure
 ///
@@ -94,6 +95,13 @@ impl TaskControlBlockInner {
             self.fd_table.len() - 1
         }
     }
+
+    // pub fn get_OSinode(&self,fd:usize) -> Option<Arc<OSInode>>{
+    //     if let Some(node) = self.fd_table[fd] {
+    //         return Some(node);
+    //     }
+    //     return None;
+    // }
 }
 
 impl TaskControlBlock {

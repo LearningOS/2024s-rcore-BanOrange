@@ -39,6 +39,9 @@ impl File for Stdin {
     fn write(&self, _user_buf: UserBuffer) -> usize {
         panic!("Cannot write to stdin!");
     }
+    fn get_info(&self) -> (usize,usize){
+        panic!("there is nothing to show");
+    }
 }
 
 impl File for Stdout {
@@ -56,5 +59,8 @@ impl File for Stdout {
             print!("{}", core::str::from_utf8(*buffer).unwrap());
         }
         user_buf.len()
+    }
+    fn get_info(&self) -> (usize,usize){
+        panic!("there is nothing to show");
     }
 }

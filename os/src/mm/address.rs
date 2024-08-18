@@ -203,6 +203,13 @@ impl PhysPageNum {
         let pa: PhysAddr = (*self).into();
         pa.get_mut()
     }
+
+    /// 得到一个当前物理地址加上偏移量得到的数据类型的引用
+    pub fn get_mut_offset<T>(&self,offset:usize) -> &'static  mut T {
+        let mut pa:PhysAddr = (*self).into();
+        pa.0 = pa.0+offset;
+        pa.get_mut()
+    }
 }
 
 /// iterator for phy/virt page number

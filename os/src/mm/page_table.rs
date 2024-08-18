@@ -4,6 +4,11 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
+use crate::fs::Stat;
+use crate::syscall::process::TaskInfo;
+use crate::syscall::process::TimeVal;
+
+
 
 bitflags! {
     /// page table entry flags
@@ -276,3 +281,37 @@ impl Iterator for UserBufferIterator {
         }
     }
 }
+
+///这个函数尝试从物理页帧当中读到想要的Timeval，即直接访问到应用程序经过虚拟内存映射的物理地址
+pub fn get_timeval(token:usize,ptr:*mut TimeVal) -> &'static mut TimeVal{
+    let page_table = PageTable::from_token(token);
+    let start = ptr as usize;
+
+    let start_va = VirtAddr::from(start);
+    let vpn = start_va.floor();
+    let ppn = page_table.translate(vpn).unwrap().ppn();
+    ppn.get_mut_offset(start_va.page_offset())
+}
+
+///这个函数会从传过来的用户态token得到想要的TaskInfo变量
+pub fn get_taskinfo_from_app(token:usize,ptr:*mut TaskInfo) -> &'static mut TaskInfo{
+    let page_table = PageTable::from_token(token);
+    let start = ptr as usize;
+
+    let start_va = VirtAddr::from(start);
+    let vpn = start_va.floor();
+    let ppn = page_table.translate(vpn).unwrap().ppn();
+    ppn.get_mut_offset(start_va.page_offset())
+}
+
+///这个函数会从传过来的用户态token得到想要的Stat变量
+pub fn get_stat_from_app(token:usize,ptr:*mut Stat) -> &'static mut Stat{
+    let page_table = PageTable::from_token(token);
+    let start = ptr as usize;
+
+    let start_va = VirtAddr::from(start);
+    let vpn = start_va.floor();
+    let ppn = page_table.translate(vpn).unwrap().ppn();
+    ppn.get_mut_offset(start_va.page_offset())
+}
+
