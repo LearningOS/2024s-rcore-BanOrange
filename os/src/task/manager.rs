@@ -25,6 +25,22 @@ impl TaskManager {
     pub fn fetch(&mut self) -> Option<Arc<TaskControlBlock>> {
         self.ready_queue.pop_front()
     }
+
+    //用以得到當前stride值最小的任務
+    pub fn get_smallest_stride_task(&mut self) -> Option<Arc<TaskControlBlock>>{
+        let first_task = self.ready_queue.get(0).unwrap();
+        let mut min_stride = first_task.inner_exclusive_access().stride; 
+        let mut id = 0;
+        let mut count =0;
+        for item in self.ready_queue.iter() {
+            if item.inner_exclusive_access().stride<min_stride{
+                min_stride = item.inner_exclusive_access().stride;
+                id = count;
+            }
+            count += 1;
+        }
+        self.ready_queue.remove(id)
+    }
 }
 
 lazy_static! {
@@ -43,4 +59,9 @@ pub fn add_task(task: Arc<TaskControlBlock>) {
 pub fn fetch_task() -> Option<Arc<TaskControlBlock>> {
     //trace!("kernel: TaskManager::fetch_task");
     TASK_MANAGER.exclusive_access().fetch()
+}
+
+//根據stride值找到對應的任務
+pub fn fetch_task_stride() -> Option<Arc<TaskControlBlock>>{
+    TASK_MANAGER.exclusive_access().get_smallest_stride_task()
 }

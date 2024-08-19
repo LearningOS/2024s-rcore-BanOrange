@@ -5,11 +5,27 @@ use crate::task::{current_task, current_user_token};
 use crate::fs::inode::unlinkat;
 use crate::fs::inode::linkat;
 use crate::fs::inode::fstat;
-use crate::fs::inode::ls;
+// use crate::fs::inode::ls;
 use crate::mm::page_table::get_stat_from_app;
+
+/// unlinkat syscall
+const SYSCALL_UNLINKAT: usize = 35;
+/// linkat syscall
+const SYSCALL_LINKAT: usize = 37;
+/// open syscall
+const SYSCALL_OPEN: usize = 56;
+/// close syscall
+const SYSCALL_CLOSE: usize = 57;
+/// read syscall
+const SYSCALL_READ: usize = 63;
+/// write syscall
+const SYSCALL_WRITE: usize = 64;
+/// fstat syscall
+const SYSCALL_FSTAT: usize = 80;
 
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     trace!("kernel:pid[{}] sys_write", current_task().unwrap().pid.0);
+    current_task().unwrap().change_info(SYSCALL_WRITE);
     let token = current_user_token();
     let task = current_task().unwrap();
     let inner = task.inner_exclusive_access();
@@ -31,6 +47,7 @@ pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
 
 pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
     trace!("kernel:pid[{}] sys_read", current_task().unwrap().pid.0);
+    current_task().unwrap().change_info(SYSCALL_READ);
     let token = current_user_token();
     let task = current_task().unwrap();
     let inner = task.inner_exclusive_access();
@@ -53,6 +70,7 @@ pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
 
 pub fn sys_open(path: *const u8, flags: u32) -> isize {
     trace!("kernel:pid[{}] sys_open", current_task().unwrap().pid.0);
+    current_task().unwrap().change_info(SYSCALL_OPEN);
     let task = current_task().unwrap();
     let token = current_user_token();
     let path = translated_str(token, path);
@@ -68,6 +86,7 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
 
 pub fn sys_close(fd: usize) -> isize {
     trace!("kernel:pid[{}] sys_close", current_task().unwrap().pid.0);
+    current_task().unwrap().change_info(SYSCALL_CLOSE);
     let task = current_task().unwrap();
     let mut inner = task.inner_exclusive_access();
     if fd >= inner.fd_table.len() {
@@ -86,6 +105,7 @@ pub fn sys_fstat(_fd: usize, _st: *mut Stat) -> isize {
         "kernel:pid[{}] sys_fstat in build",
         current_task().unwrap().pid.0
     );
+    current_task().unwrap().change_info(SYSCALL_FSTAT);
     let task = current_task().unwrap();
     let inner = task.inner_exclusive_access();
     if _fd >= inner.fd_table.len() {
@@ -126,6 +146,7 @@ pub fn sys_linkat(_old_name: *const u8, _new_name: *const u8) -> isize {
         "kernel:pid[{}] sys_linkat in build",
         current_task().unwrap().pid.0
     );
+    current_task().unwrap().change_info(SYSCALL_LINKAT);
     let token = current_user_token();
     let old_path = translated_str(token, _old_name);
     let new_path = translated_str(token,_new_name);
@@ -145,6 +166,7 @@ pub fn sys_unlinkat(_name: *const u8) -> isize {
         "kernel:pid[{}] sys_unlinkat in build",
         current_task().unwrap().pid.0
     );
+    current_task().unwrap().change_info(SYSCALL_UNLINKAT);
     let token = current_user_token();
     let name = translated_str(token,_name);
     unlinkat(&name);

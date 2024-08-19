@@ -157,6 +157,22 @@ impl PageTable {
             (aligned_pa_usize + offset).into()
         })
     }
+
+    ///返回是否是一个有效的vpn
+    pub fn find_vpn_vaild(&self,vpn:VirtPageNum) -> Option<usize>{
+        let pte = self.find_pte(vpn);
+        match pte {
+            None => return None,
+            Some(_) => {
+                if pte.unwrap().is_valid() {
+                    return Some(1);
+                }else{
+                    return None;
+                }
+            }
+        }
+    }
+    
     /// get the token from the page table
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
