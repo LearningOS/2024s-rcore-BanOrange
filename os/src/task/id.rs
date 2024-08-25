@@ -239,6 +239,11 @@ impl TaskUserRes {
     pub fn ustack_top(&self) -> usize {
         ustack_bottom_from_tid(self.ustack_base, self.tid) + USER_STACK_SIZE
     }
+
+    /// 得到该任务的tid
+    pub fn get_tid(&self)->usize{
+        return self.tid;
+    }
 }
 
 impl Drop for TaskUserRes {

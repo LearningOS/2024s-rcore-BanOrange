@@ -4,6 +4,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
+use crate::syscall::process::TimeVal;
 
 bitflags! {
     /// page table entry flags
@@ -215,6 +216,17 @@ pub fn translated_refmut<T>(token: usize, ptr: *mut T) -> &'static mut T {
         .translate_va(VirtAddr::from(va))
         .unwrap()
         .get_mut()
+}
+
+///这个函数尝试从物理页帧当中读到想要的Timeval，即直接访问到应用程序经过虚拟内存映射的物理地址
+pub fn get_timeval(token:usize,ptr:*mut TimeVal) -> &'static mut TimeVal{
+    let page_table = PageTable::from_token(token);
+    let start = ptr as usize;
+
+    let start_va = VirtAddr::from(start);
+    let vpn = start_va.floor();
+    let ppn = page_table.translate(vpn).unwrap().ppn();
+    ppn.get_mut_offset(start_va.page_offset())
 }
 
 /// An abstraction over a buffer passed from user space to kernel space

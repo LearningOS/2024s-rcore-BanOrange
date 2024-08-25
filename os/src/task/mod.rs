@@ -17,7 +17,7 @@ mod processor;
 mod signal;
 mod switch;
 #[allow(clippy::module_inception)]
-mod task;
+pub mod task;
 
 use self::id::TaskUserRes;
 use crate::fs::{open_file, OpenFlags};

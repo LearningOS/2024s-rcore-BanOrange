@@ -8,6 +8,8 @@ use crate::{
     },
 };
 use alloc::{string::String, sync::Arc, vec::Vec};
+use crate::timer::get_time_us;
+use crate::mm::page_table::get_timeval;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -164,10 +166,17 @@ pub fn sys_kill(pid: usize, signal: u32) -> isize {
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_get_time",
         current_task().unwrap().process.upgrade().unwrap().getpid()
     );
-    -1
+
+    let v = get_timeval(current_user_token(),_ts);
+    let us = get_time_us();
+    v.sec = us / 1_000_000;
+    v.usec = us % 1_000_000;
+    0
+
+    
 }
 
 /// task_info syscall

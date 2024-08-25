@@ -49,6 +49,19 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+
+    /// 剩余资源总量（应该通过create来增加或者减小）
+    pub available: Vec<isize>,
+    /// 分配矩阵
+    pub allocation: Vec<Vec<isize>>,
+    /// 需求矩阵
+    pub need: Vec<Vec<isize>>,
+    /// 用来表示是否启用死锁检测
+    pub deadlock: usize,
+
+    ///由于我们必须要判断申请的资源id对应的数组位置是什么，所以不得不再来一个数据结构存储对应关系
+    ///第一个参数标明类型，0表示mutex，1表示信号量
+    pub relation: Vec<(usize,usize,usize)>,
 }
 
 impl ProcessControlBlockInner {
@@ -81,6 +94,207 @@ impl ProcessControlBlockInner {
     /// get a task with tid in this process
     pub fn get_task(&self, tid: usize) -> Arc<TaskControlBlock> {
         self.tasks[tid].as_ref().unwrap().clone()
+    }
+
+    ///该函数用于sem中的V操作
+    pub fn add_sem(&mut self,id:usize){
+        let mut k:usize = usize::MAX;
+        //首先寻找一下对应的sem位置
+        for triple in 0..self.relation.len(){
+            if self.relation[triple].0 == 1 && self.relation[triple].1 == id {
+                k = self.relation[triple].2;
+            }
+        }
+        if k == usize::MAX{
+            println!("wrong to get the position of sem");
+            return;
+        }
+        self.available[k] += 1;
+    }
+
+    ///该函数用于死锁检测算法的资源回收
+    pub fn remove_allocation(&mut self,kind:usize,id:usize,tid:usize) -> isize{
+        let mut k:usize = usize::MAX;
+        //首先寻找一下对应的线程
+        for triple in 0..self.relation.len(){
+            if self.relation[triple].0 == 2 && self.relation[triple].1 == tid {
+                k = self.relation[triple].2;
+            }
+        }
+        if k == usize::MAX{
+            println!("wrong to get i from tid");
+            return -1;
+        }
+        
+        //先看mutex的情况
+        if kind == 0{
+            for triple in 0..self.relation.len(){
+                //寻找一下对应的位置和关系
+                if self.relation[triple].0 == 0 && self.relation[triple].1 == id{
+                    //找到了
+                    let index = self.relation[triple].2;
+                    self.available[index] += 1;
+                    self.allocation[k][index] -= 1;
+                }
+            }
+        }
+
+        //同理sem的情况
+        if kind == 1{
+            for triple in 0..self.relation.len(){
+                //寻找一下对应的位置和关系
+                if self.relation[triple].0 == 1 && self.relation[triple].1 == id{
+                    //找到了
+                    let index = self.relation[triple].2;
+                    self.available[index] += 1;
+                    self.allocation[k][index] -= 1;
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    ///该函数用于分配资源
+    pub fn set_allocation(&mut self,kind:usize,id:usize,tid:usize) -> isize{
+        let mut k:usize = usize::MAX;
+        //首先寻找一下对应的线程
+        for triple in 0..self.relation.len(){
+            if self.relation[triple].0 == 2 && self.relation[triple].1 == tid {
+                k = self.relation[triple].2;
+            }
+        }
+        if k == usize::MAX{
+            println!("wrong to get the position of task from tid");
+            return -1;
+        }
+        
+        //先看mutex的情况
+        if kind == 0{
+            for triple in 0..self.relation.len(){
+                //寻找一下对应的位置和关系
+                if self.relation[triple].0 == 0 && self.relation[triple].1 == id{
+                    //找到了
+                    let index = self.relation[triple].2;
+                    self.available[index] -= 1;
+                    self.allocation[k][index] += 1;
+                }
+            }
+        }
+
+        //同理sem的情况
+        if kind == 1{
+            for triple in 0..self.relation.len(){
+                //寻找一下对应的位置和关系
+                if self.relation[triple].0 == 1 && self.relation[triple].1 == id{
+                    //找到了
+                    let index = self.relation[triple].2;
+                    if self.available[index] == 0{
+                        self.need[k][index] += 1;
+                    }else{
+                        self.available[index] -= 1;
+                        self.allocation[k][index] += 1;
+                    }
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    ///该算法用于提前检测死锁
+    pub fn check_deadlock(&mut self,kind:usize,id:usize,tid:usize) -> isize{
+        let mut work = self.available.clone();
+        println!("work:{:?}",work);
+        let mut finish:Vec<bool> = vec![false;self.need.len()];
+        let mut flag = 0;
+        let mut index:usize = usize::MAX;
+        //先把need加到对应的矩阵当中
+        let mut k:usize = usize::MAX;
+        //首先寻找一下对应的线程
+        for triple in 0..self.relation.len(){
+            if self.relation[triple].0 == 2
+             && self.relation[triple].1 == tid {
+                k = self.relation[triple].2;
+            }
+        }
+        if k == usize::MAX{
+            println!("wrong to get the position of task from tid");
+            return -1;
+        }
+
+         //先看mutex的情况
+         if kind == 0{
+            let mut flag = 0;
+            for triple in 0..self.relation.len(){
+                //寻找一下对应的位置和关系
+                if self.relation[triple].0 == 0 && self.relation[triple].1 == id{
+                    //找到了
+                    flag = 1;
+                    index = self.relation[triple].2;
+                    self.need[k][index] += 1;
+                }
+            }
+            if flag == 0{
+                return -1;
+            }
+        }
+
+        println!("{:?}",self.allocation);
+        //同理sem的情况
+        if kind == 1{
+            let mut flag = 0;
+            for triple in 0..self.relation.len(){
+                //寻找一下对应的位置和关系
+                if self.relation[triple].0 == 1 && self.relation[triple].1 == id{
+                    //找到了
+                    flag = 1;
+                    index = self.relation[triple].2;
+                    self.need[k][index] += 1;
+                }
+            }
+            if flag == 0{
+                return -1;
+            }
+        }
+        
+        println!("{:?}",self.need);
+    
+        //先遍历所有任务
+        while flag == 0 {
+            flag = 1;
+            for i in 0..finish.len(){
+                //找未完成的任务
+                if finish[i] == false{
+                    let mut flag_use = 0;
+                    // 如果其中所有的资源需求都被满足的话就可以完成该任务
+                    for j in 0..work.len() {
+                        if self.need[i][j]>work[j]{
+                            flag_use = 1;
+                        }
+                    }
+                    //有任务被完成，则继续寻找
+                    if flag_use == 0 {
+                        for j in 0..work.len(){
+                            work[j] = work[j] + self.allocation[i][j];
+                            finish[i] = true;
+                            flag = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        //撤回need的增加
+        self.need[k][index] -= 1;
+
+        //所有可以完成的任务都已经实现，下面开始检查是否全部都是true
+        for i in 0..finish.len(){
+            if finish[i] == false{
+                return -1;
+            }
+        }
+        return 0;
     }
 }
 
@@ -119,6 +333,11 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    available: Vec::new(),
+                    allocation: Vec::new(),
+                    need:Vec::new(),
+                    deadlock:0,
+                    relation:Vec::new(),
                 })
             },
         });
@@ -245,6 +464,11 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    available: Vec::new(),
+                    allocation: Vec::new(),
+                    need:Vec::new(),
+                    deadlock:0,
+                    relation:Vec::new(),
                 })
             },
         });
@@ -267,6 +491,9 @@ impl ProcessControlBlock {
         // attach task to child process
         let mut child_inner = child.inner_exclusive_access();
         child_inner.tasks.push(Some(Arc::clone(&task)));
+        child_inner.allocation.push(Vec::new());
+        child_inner.need.push(Vec::new());
+        child_inner.relation.push((2,0,0));
         drop(child_inner);
         // modify kstack_top in trap_cx of this thread
         let task_inner = task.inner_exclusive_access();

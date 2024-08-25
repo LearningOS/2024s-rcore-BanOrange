@@ -52,6 +52,9 @@ impl TaskControlBlockInner {
     fn get_status(&self) -> TaskStatus {
         self.task_status
     }
+    pub fn get_tid_inner(&mut self)->usize{
+        return 1;
+    }
 }
 
 impl TaskControlBlock {
@@ -78,6 +81,11 @@ impl TaskControlBlock {
                 })
             },
         }
+    }
+
+    pub fn get_tid(&self) -> usize{
+        let mut inner = self.inner_exclusive_access();
+        inner.get_tid_inner()
     }
 }
 
